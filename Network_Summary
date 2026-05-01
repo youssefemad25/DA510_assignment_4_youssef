@@ -1,0 +1,157 @@
+# Network Configuration Summary
+## Assignment 4: Deploy Gitea in a Custom VPC
+
+---
+
+## VPC
+| Setting | Value |
+|---|---|
+| Name | gitea-vpc |
+| CIDR Block | 10.0.0.0/16 |
+| DNS Hostnames | Enabled |
+| DNS Resolution | Enabled |
+
+---
+
+## Subnets
+| Name | CIDR | Type | Availability Zone |
+|---|---|---|---|
+| gitea-public-subnet | 10.0.1.0/24 | Public | us-east-1a |
+| gitea-private-subnet | 10.0.2.0/24 | Private | us-east-1a |
+
+---
+
+## Internet Gateway
+| Setting | Value |
+|---|---|
+| Name | gitea-igw |
+| State | Attached |
+| VPC | gitea-vpc |
+
+---
+
+## NAT Gateway
+| Setting | Value |
+|---|---|
+| Name | gitea-nat |
+| Location | gitea-public-subnet |
+| Connectivity | Public |
+| Elastic IP | Allocated |
+
+---
+
+## Route Tables
+### Public Route Table (gitea-public-rt)
+| Destination | Target | Purpose |
+|---|---|---|
+| 10.0.0.0/16 | local | VPC internal traffic |
+| 0.0.0.0/0 | igw-xxxxxxxx | Internet access |
+
+Associated with: `gitea-public-subnet`
+
+### Private Route Table (gitea-private-rt)
+| Destination | Target | Purpose |
+|---|---|---|
+| 10.0.0.0/16 | local | VPC internal traffic |
+| 0.0.0.0/0 | nat-xxxxxxxx | Outbound via NAT |
+
+Associated with: `gitea-private-subnet`
+
+---
+
+## Security Groups
+
+### gitea-public-sg (nginx reverse proxy)
+#### Inbound Rules
+| Type | Protocol | Port | Source | Reason |
+|---|---|---|---|---|
+| HTTP | TCP | 80 | 0.0.0.0/0 | Public web access |
+| SSH | TCP | 22 | <your-ip>/32 | Admin access only |
+
+#### Outbound Rules
+| Type | Protocol | Port | Destination |
+|---|---|---|---|
+| All traffic | All | All | 0.0.0.0/0 |
+
+---
+
+### gitea-private-sg (backend instances)
+#### Inbound Rules
+| Type | Protocol | Port | Source | Reason |
+|---|---|---|---|---|
+| Custom TCP | TCP | 3000 | gitea-public-sg | Gitea from nginx only |
+| Custom TCP | TCP | 5000 | gitea-public-sg | API from nginx only |
+| SSH | TCP | 22 | gitea-public-sg | Jump host access only |
+
+#### Outbound Rules
+| Type | Protocol | Port | Destination |
+|---|---|---|---|
+| All traffic | All | All | 0.0.0.0/0 |
+
+---
+
+## EC2 Instances
+| Name | Type | Subnet | Public IP | Security Group |
+|---|---|---|---|---|
+| nginx-proxy | t3.micro | gitea-public-subnet | Yes | gitea-public-sg |
+| gitea-backend | t3.micro | gitea-private-subnet | No | gitea-private-sg |
+| api-backend | t3.micro | gitea-private-subnet | No | gitea-private-sg |
+
+---
+
+## nginx Routing Configuration
+| Path | Backend | Port | Purpose |
+|---|---|---|---|
+| / | gitea-backend private IP | 3000 | Gitea web interface |
+| /api/ | api-backend private IP | 5000 | Audit/Event API |
+
+### nginx Config File (/etc/nginx/sites-available/default)
+```nginx
+server {
+    listen 80;
+
+    location / {
+        proxy_pass http://<gitea-private-ip>:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /api/ {
+        proxy_pass http://<api-private-ip>:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+---
+
+## API Endpoints
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | /api/health | Health check |
+| GET | /api/events | List all events |
+| POST | /api/events | Create new event |
+
+### Example POST Request
+```json
+{
+  "event_type": "push",
+  "repo": "team1/project",
+  "user": "alice"
+}
+```
+
+### Example Log Entry
+```json
+{
+  "timestamp": "2026-05-01T01:40:18",
+  "method": "POST",
+  "path": "/api/events",
+  "status": 201,
+  "client_ip": "10.0.1.145",
+  "body_summary": "{'event_type': 'push', 'repo': 'team1/project', 'user': 'alice'}"
+}
+```
